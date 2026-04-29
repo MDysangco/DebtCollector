@@ -5,38 +5,36 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import train_test_split
 
-# Example train_and_calibrate signature used by pipeline
 def train_and_calibrate(train_df: pd.DataFrame):
     """
-    Train per-prefix models and return (models_dict, feature_cols_dict).
-    Expects wide feature_df with columns like <prefix>_<feature>.
-    This implementation:
-      - Detects prefixes by scanning columns ending with _Close
-      - Trains a RandomForest per prefix using a simple target (next-period ret > 0)
-      - Calibrates probabilities with CalibratedClassifierCV (robust to sklearn API)
+    Train per-prefix models and return:
+      models: dict[prefix] -> calibrated model
+      feature_cols: dict[prefix] -> list of feature column names
+      thresholds: dict[prefix] -> per-prefix probability threshold (75th percentile on calib set)
+      medians: dict[prefix] -> dict(feature -> median) for imputation on test
     """
-    # detect prefixes
     prefixes = sorted({c.rsplit("_", 1)[0] for c in train_df.columns if c.endswith("_Close")})
     models = {}
     feature_cols = {}
+    thresholds = {}
+    medians = {}
 
     for prefix in prefixes:
-        # define features and target for this prefix
         close_col = f"{prefix}_Close"
         if close_col not in train_df.columns:
             continue
 
-        # choose a small set of features automatically (all columns for this prefix except Close/Volume)
         cols = [c for c in train_df.columns if c.startswith(prefix + "_") and not c.endswith("_Close") and not c.endswith("_Volume")]
         if not cols:
             continue
 
-        df = train_df[[close_col] + cols].dropna()
+        df = train_df[[close_col] + cols].copy()
+        # drop rows where close is NaN (no price)
+        df = df[df[close_col].notna()]
         if df.shape[0] < 200:
-            # not enough data to train a per-prefix model
             continue
 
-        # simple binary target: next period return positive
+        # target: next period return > 0
         df["target"] = df[close_col].pct_change().shift(-1) > 0
         df = df.dropna()
         if df["target"].nunique() < 2:
@@ -45,14 +43,23 @@ def train_and_calibrate(train_df: pd.DataFrame):
         X = df[cols].astype(float)
         y = df["target"].astype(int)
 
-        # train/test split for calibration holdout
-        X_train, X_calib, y_train, y_calib = train_test_split(X, y, test_size=0.2, shuffle=False)
+        # store medians for imputation on test
+        med = X.median()
+        medians[prefix] = med.to_dict()
+
+        # train/calibration split (time-ordered)
+        split_idx = int(len(X) * 0.8)
+        X_train, X_calib = X.iloc[:split_idx], X.iloc[split_idx:]
+        y_train, y_calib = y.iloc[:split_idx], y.iloc[split_idx:]
+
+        if X_train.shape[0] < 50 or X_calib.shape[0] < 20:
+            # fallback to a single fit if calibration split too small
+            X_train, X_calib, y_train, y_calib = train_test_split(X, y, test_size=0.2, shuffle=False)
 
         base = RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=42)
         base.fit(X_train, y_train)
 
         # Calibrate robustly across sklearn versions and fallbacks
-        calib = None
         try:
             calib = CalibratedClassifierCV(estimator=base, method="sigmoid", cv="prefit")
             calib.fit(X_calib, y_calib)
@@ -67,7 +74,22 @@ def train_and_calibrate(train_df: pd.DataFrame):
             calib = CalibratedClassifierCV(estimator=base, method="sigmoid", cv=3)
             calib.fit(X_train, y_train)
 
+        # compute a conservative per-symbol threshold from calibration set
+        try:
+            calib_probs = calib.predict_proba(X_calib)[:, 1]
+            per_symbol_threshold = float(np.quantile(calib_probs, 0.75))
+        except Exception:
+            per_symbol_threshold = 0.5
+
         models[prefix] = calib
         feature_cols[prefix] = cols
+        thresholds[prefix] = per_symbol_threshold
 
-    return models, feature_cols
+        # lightweight training report
+        try:
+            pos_frac = float(y.mean())
+        except Exception:
+            pos_frac = 0.0
+        print(f"TRAIN: prefix={prefix}, rows={len(df)}, pos_frac={pos_frac:.3f}, calib_thresh={per_symbol_threshold:.3f}")
+
+    return models, feature_cols, thresholds, medians

@@ -1,31 +1,42 @@
 # signal_engine.py
 import pandas as pd
 import numpy as np
+import config
 
-def build_raw_signals(test_df: pd.DataFrame, models: dict, feature_cols: dict) -> pd.DataFrame:
+def build_raw_signals(test_df: pd.DataFrame, models: dict, feature_cols: dict, medians: dict = None) -> pd.DataFrame:
     """
     Build raw signals DataFrame with columns: timestamp, symbol, prob_long.
-    - For each prefix in models, predict probabilities on test_df[feature_cols[prefix]].
-    - Returns concatenated DataFrame (may be empty).
+    medians: optional dict[prefix] -> dict(feature->median) used to impute test features.
     """
     rows = []
+    medians = medians or {}
+
     for prefix, model in models.items():
         cols = feature_cols.get(prefix)
         if not cols:
             continue
+
         X = test_df[cols].copy()
-        # drop rows with NaNs for this model's features
-        X = X.dropna()
+        # Impute with training medians if available; otherwise forward/backfill as a last resort
+        med = medians.get(prefix)
+        if med:
+            # pandas accepts a dict for fillna(value=...), which will map column names to values
+            X = X.fillna(value=med)
+        else:
+            if config.IMPUTATION_METHOD == "median":
+                X = X.fillna(value={col: medians.get(prefix, {}).get(col, X[col].median()) for col in cols})
+            else:
+                X = X.ffill().bfill()
+
         if X.empty:
             continue
+
         try:
             probs = model.predict_proba(X)[:, 1]
         except Exception:
-            # fallback: if model doesn't support predict_proba, use decision_function or predict
             try:
-                probs = model.decision_function(X)
-                # scale to 0-1 via logistic
-                probs = 1 / (1 + np.exp(-probs))
+                probs_raw = model.decision_function(X)
+                probs = 1 / (1 + np.exp(-probs_raw))
             except Exception:
                 probs = model.predict(X)
                 probs = np.asarray(probs, dtype=float)
@@ -44,31 +55,34 @@ def build_raw_signals(test_df: pd.DataFrame, models: dict, feature_cols: dict) -
     return raw
 
 
-def apply_execution_logic(raw_signals: pd.DataFrame, prob_threshold: float = 0.6, cooldown_hours: int = 24) -> pd.DataFrame:
+def apply_execution_logic(raw_signals: pd.DataFrame, thresholds: dict = None, global_threshold = config.GLOBAL_THRESHOLD, cooldown_hours = config.COOLDOWN_HOURS) -> pd.DataFrame:
     """
     Convert raw signals into executable signals.
-    - Filters by prob_threshold.
-    - Ensures one signal per symbol per cooldown window (simple implementation).
-    Returns DataFrame with timestamp, symbol, prob_long, final_signal (1 long, 0 flat).
+    thresholds: dict[prefix] -> threshold; fallback to global_threshold.
+    Returns DataFrame with timestamp, symbol, prob_long, final_signal.
     """
     if raw_signals is None or raw_signals.empty:
         return pd.DataFrame(columns=["timestamp", "symbol", "prob_long", "final_signal"])
 
+    thresholds = thresholds or {}
     df = raw_signals.copy()
-    # ensure timestamp is datetime
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
     df = df[df["timestamp"].notna()]
 
-    # filter by probability threshold
-    df = df[df["prob_long"] >= prob_threshold].sort_values(["symbol", "timestamp"])
+    # map per-symbol threshold
+    floor = config.PER_SYMBOL_FLOOR
+    df["threshold"] = df["symbol"].map(lambda s: max(thresholds.get(s, global_threshold), floor))
 
-    if df.empty:
+    margin = config.MARGIN
+    df_filtered = df[df["prob_long"] >= (df["threshold"] + margin)].sort_values(["symbol", "timestamp"])
+
+    # If nothing survives for a symbol, do not force fallback here (prefer no trade)
+    if df_filtered.empty:
         return pd.DataFrame(columns=["timestamp", "symbol", "prob_long", "final_signal"])
 
-    # simple cooldown: keep first signal per symbol per cooldown_hours
     out_rows = []
     cooldown = pd.Timedelta(hours=cooldown_hours)
-    for symbol, g in df.groupby("symbol"):
+    for symbol, g in df_filtered.groupby("symbol"):
         last_ts = None
         for _, row in g.iterrows():
             ts = row["timestamp"]
