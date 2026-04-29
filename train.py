@@ -1,70 +1,73 @@
+# train.py
 import numpy as np
+import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from xgboost import XGBClassifier
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.model_selection import train_test_split
 
-def train_multi_horizon_models(df, feature_cols):
+# Example train_and_calibrate signature used by pipeline
+def train_and_calibrate(train_df: pd.DataFrame):
+    """
+    Train per-prefix models and return (models_dict, feature_cols_dict).
+    Expects wide feature_df with columns like <prefix>_<feature>.
+    This implementation:
+      - Detects prefixes by scanning columns ending with _Close
+      - Trains a RandomForest per prefix using a simple target (next-period ret > 0)
+      - Calibrates probabilities with CalibratedClassifierCV (robust to sklearn API)
+    """
+    # detect prefixes
+    prefixes = sorted({c.rsplit("_", 1)[0] for c in train_df.columns if c.endswith("_Close")})
     models = {}
+    feature_cols = {}
 
-    horizons = {
-        "h6":  "Label_6",
-        "h24": "Label_24",
-        "h72": "Label_72",
-    }
-
-    for prefix in sorted({c.split("_")[0] for c in df.columns if "_Close" in c}):
-        print(f"\n=== Training models for {prefix} ===")
-
-        label_cols = {
-            h: f"{prefix}_{col}"
-            for h, col in horizons.items()
-        }
-
-        # Ensure all label columns exist
-        if not all(col in df.columns for col in label_cols.values()):
-            print(f"Skipping {prefix} — missing horizon labels")
+    for prefix in prefixes:
+        # define features and target for this prefix
+        close_col = f"{prefix}_Close"
+        if close_col not in train_df.columns:
             continue
 
-        # Mask rows where all horizons have labels
-        mask = ~(df[label_cols["h6"]].isna() |
-                 df[label_cols["h24"]].isna() |
-                 df[label_cols["h72"]].isna())
-
-        if mask.sum() < 200:
-            print(f"Skipping {prefix} — insufficient training rows")
+        # choose a small set of features automatically (all columns for this prefix except Close/Volume)
+        cols = [c for c in train_df.columns if c.startswith(prefix + "_") and not c.endswith("_Close") and not c.endswith("_Volume")]
+        if not cols:
             continue
 
-        X = df.loc[mask, feature_cols].values
-        models[prefix] = {}
+        df = train_df[[close_col] + cols].dropna()
+        if df.shape[0] < 200:
+            # not enough data to train a per-prefix model
+            continue
 
-        for h, col in label_cols.items():
-            y = df.loc[mask, col].values.astype(int)
+        # simple binary target: next period return positive
+        df["target"] = df[close_col].pct_change().shift(-1) > 0
+        df = df.dropna()
+        if df["target"].nunique() < 2:
+            continue
 
-            # Shift -1,0,1 → 0,1,2
-            y = y + 1
+        X = df[cols].astype(float)
+        y = df["target"].astype(int)
 
-            # Skip horizons with only one class
-            if len(np.unique(y)) < 2:
-                print(f"  Skipping {prefix} {h} — only one class present")
-                continue
+        # train/test split for calibration holdout
+        X_train, X_calib, y_train, y_calib = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-            clf = XGBClassifier(
-                n_estimators=300,
-                max_depth=6,
-                learning_rate=0.05,
-                subsample=0.9,
-                colsample_bytree=0.9,
-                objective="multi:softprob",
-                eval_metric="mlogloss",
-                tree_method="hist"
-            )
+        base = RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=42)
+        base.fit(X_train, y_train)
 
-            clf.fit(X, y)
-            models[prefix][h] = clf
+        # Calibrate robustly across sklearn versions and fallbacks
+        calib = None
+        try:
+            calib = CalibratedClassifierCV(estimator=base, method="sigmoid", cv="prefit")
+            calib.fit(X_calib, y_calib)
+        except TypeError:
+            try:
+                calib = CalibratedClassifierCV(base_estimator=base, method="sigmoid", cv="prefit")
+                calib.fit(X_calib, y_calib)
+            except Exception:
+                calib = CalibratedClassifierCV(estimator=base, method="sigmoid", cv=3)
+                calib.fit(X_train, y_train)
+        except Exception:
+            calib = CalibratedClassifierCV(estimator=base, method="sigmoid", cv=3)
+            calib.fit(X_train, y_train)
 
-        # If no horizons trained, remove prefix
-        if len(models[prefix]) == 0:
-            print(f"Removing {prefix} — no valid horizons")
-            del models[prefix]
+        models[prefix] = calib
+        feature_cols[prefix] = cols
 
-    return models
-
+    return models, feature_cols
