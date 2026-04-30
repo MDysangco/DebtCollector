@@ -7,7 +7,7 @@ import urllib
 # DB ENGINE
 # =========================================================
 def get_engine():
-    pipe = r"np:\\.\pipe\LOCALDB#459FCBA5\tsql\query"
+    pipe = r"np:\\.\pipe\LOCALDB#77988730\tsql\query"
 
     params = urllib.parse.quote_plus(
         "DRIVER=ODBC Driver 17 for SQL Server;"

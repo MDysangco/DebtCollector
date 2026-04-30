@@ -34,6 +34,8 @@ def walkforward_runner(
     verbose: bool = True,
     max_folds: int = None,
 ):
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+
     feature_df = feature_df.copy()
     raw_price_df = raw_price_df.copy()
 
@@ -231,7 +233,7 @@ def walkforward_runner(
             "avg_entry_prob": float(signals["prob_long"].mean()) if len(signals) else None,
         }
 
-        fold_csv = os.path.join(LOG_DIR, "wf_fold_log.csv")
+        fold_csv = os.path.join(LOG_DIR, f"wf_fold_log_{date_str}.csv")
         df_fold = pd.DataFrame([fold_row])
         # append safely: write header only if file doesn't exist
         if not os.path.exists(fold_csv):
@@ -252,7 +254,7 @@ def walkforward_runner(
             per_symbol["test_start"] = test_start
             per_symbol["test_end"] = test_end
 
-            per_symbol_csv = os.path.join(LOG_DIR, "wf_per_symbol_log.csv")
+            per_symbol_csv = os.path.join(LOG_DIR, f"wf_per_symbol_log_{date_str}.csv")
             if not os.path.exists(per_symbol_csv):
                 per_symbol.to_csv(per_symbol_csv, index=False)
             else:
