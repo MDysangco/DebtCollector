@@ -1,17 +1,17 @@
 import pandas as pd
 
-df = pd.read_csv("logs/walkforward/wf_fold_log.csv")
-print({
-  "folds": len(df),
-  "mean_return_pct": df["fold_return_pct"].mean(),
-  "median_return_pct": df["fold_return_pct"].median(),
-  "pct_negative_folds": (df["fold_return_pct"] < 0).mean(),
-  "worst_max_dd": df["max_dd"].min(),
-  "avg_trades_per_fold": df["trades"].mean(),
-  "median_avg_entry_prob": df["avg_entry_prob"].median()
-})
+from load_data import load_klines
+from features import build_features
 
-ps = pd.read_csv("logs/walkforward/wf_per_symbol_log.csv")
-summary = ps.groupby("symbol").agg(trades=("trades","sum"), avg_prob=("avg_prob","mean")).reset_index()
-trouble = summary[(summary["trades"]>=100) & (summary["avg_prob"]<0.515)].sort_values(["trades","avg_prob"], ascending=[False,True])
-print(trouble.to_csv(index=False))
+df = load_klines()
+feat = build_features(df)
+
+train_start = feat.index.min()
+train_end   = train_start + pd.Timedelta(days=90)
+test_start  = train_end
+test_end    = test_start + pd.Timedelta(days=30)
+
+test_df = feat.loc[test_start:test_end]
+
+print("Non-NaN counts per column:")
+print(test_df.notna().sum().sort_values())

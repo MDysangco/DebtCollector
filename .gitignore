@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 
 # Secrets / configs
-config.py
 .env
 .env.*
 

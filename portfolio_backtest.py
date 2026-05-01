@@ -63,29 +63,52 @@ def backtest_portfolio(df, signal_configs, periods=None):
             # Forced exit if coin not in universe
             forced_exit = prefix not in active
 
-            # ENTRY
-            if positions[prefix] == 0 and sig == 1 and not forced_exit:
-                positions[prefix] = 1
-                entry_price[prefix] = price_now
-                entry_time[prefix] = ts
-                entry_idx[prefix] = i
+            # --- LONG / SHORT ENTRY LOGIC ---
+            if positions[prefix] == 0 and not forced_exit:
 
-                alloc = equity / len(prefixes)
-                notional[prefix] = alloc
+                # LONG ENTRY
+                if sig == 1:
+                    positions[prefix] = 1
+                    entry_price[prefix] = price_now
+                    entry_time[prefix] = ts
+                    entry_idx[prefix] = i
 
-                equity -= alloc * FEE_RATE
+                    alloc = equity / len(prefixes)
+                    notional[prefix] = alloc
 
-            # EXIT LOGIC (normal + SL/TP/max-hold + forced)
-            elif positions[prefix] == 1:
+                    equity -= alloc * FEE_RATE  # entry fee
+
+                # SHORT ENTRY
+                elif sig == -1:
+                    positions[prefix] = -1
+                    entry_price[prefix] = price_now
+                    entry_time[prefix] = ts
+                    entry_idx[prefix] = i
+
+                    alloc = equity / len(prefixes)
+                    notional[prefix] = alloc
+
+                    equity -= alloc * FEE_RATE  # entry fee
+
+
+            # --- EXIT LOGIC (LONG OR SHORT) ---
+            elif positions[prefix] != 0:
+
                 bars_held = i - entry_idx[prefix]
-                pnl_pct = (price_now - entry_price[prefix]) / entry_price[prefix]
+
+                # Long PnL: (price_now - entry_price) / entry_price
+                # Short PnL: (entry_price - price_now) / entry_price
+                if positions[prefix] == 1:
+                    pnl_pct = (price_now - entry_price[prefix]) / entry_price[prefix]
+                else:  # SHORT
+                    pnl_pct = (entry_price[prefix] - price_now) / entry_price[prefix]
 
                 exit_now = (
-                    sig == 0 or
-                    forced_exit or
-                    pnl_pct <= STOP_LOSS or
-                    pnl_pct >= TAKE_PROFIT or
-                    bars_held >= MAX_HOLD
+                        sig == 0 or
+                        forced_exit or
+                        pnl_pct <= STOP_LOSS or
+                        pnl_pct >= TAKE_PROFIT or
+                        bars_held >= MAX_HOLD
                 )
 
                 if exit_now:
@@ -100,6 +123,7 @@ def backtest_portfolio(df, signal_configs, periods=None):
                         "entry_price": float(entry_price[prefix]),
                         "exit_price": float(price_now),
                         "pnl_pct": float(pnl_pct),
+                        "side": "LONG" if positions[prefix] == 1 else "SHORT",
                     })
 
                     positions[prefix] = 0
@@ -113,11 +137,12 @@ def backtest_portfolio(df, signal_configs, periods=None):
     # Close open positions at final bar
     final_ts = df.index[-1]
     for prefix in prefixes:
-        if positions[prefix] == 1:
-            close_col = f"{prefix}_Close"
-            price_now = df.iloc[-1][close_col]
+        if positions[prefix] != 0:
+            if positions[prefix] == 1:
+                pnl_pct = (price_now - entry_price[prefix]) / entry_price[prefix]
+            else:
+                pnl_pct = (entry_price[prefix] - price_now) / entry_price[prefix]
 
-            pnl_pct = (price_now - entry_price[prefix]) / entry_price[prefix]
             pnl = notional[prefix] * pnl_pct
             fee = notional[prefix] * FEE_RATE
             equity += pnl - fee
@@ -129,6 +154,7 @@ def backtest_portfolio(df, signal_configs, periods=None):
                 "entry_price": float(entry_price[prefix]),
                 "exit_price": float(price_now),
                 "pnl_pct": float(pnl_pct),
+                "side": "LONG" if positions[prefix] == 1 else "SHORT",
             })
 
     # Stats

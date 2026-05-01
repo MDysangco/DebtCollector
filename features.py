@@ -159,4 +159,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         if feat_df[c].dtype == "float64":
             feat_df[c] = feat_df[c].astype("float32")
 
+    # --- SAVE FEATURES TO DISK ---
+    feat_df.to_pickle("features.pkl")
+
     return feat_df

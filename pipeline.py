@@ -111,7 +111,12 @@ def walkforward_runner(
             continue
 
         try:
-            raw_signals = build_signals_fn(test_df, models, feature_cols, medians)
+            raw_signals = build_signals_fn(
+                test_df=test_df,
+                models=models,
+                feature_cols=feature_cols,
+                medians=medians
+            )
         except Exception as e:
             if verbose:
                 print(f"Fold {fold}: build_signals_fn error: {e}. Skipping.")
@@ -145,10 +150,12 @@ def walkforward_runner(
             # use config values for execution logic
             signals = apply_execution_logic(
                 raw_signals,
-                thresholds=thresholds,
-                global_threshold=config.GLOBAL_THRESHOLD,
-                cooldown_hours=config.COOLDOWN_HOURS,
+                global_threshold= config.GLOBAL_THRESHOLD,
+                per_symbol_floor= config.PER_SYMBOL_FLOOR,
+                margin= config.MARGIN,
+                cooldown_hours= config.COOLDOWN_HOURS,
             )
+
         except Exception as e:
             if verbose:
                 print(f"Fold {fold}: apply_execution_logic error: {e}. Skipping.")
