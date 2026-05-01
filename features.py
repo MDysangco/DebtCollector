@@ -54,7 +54,7 @@ def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14):
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # Ensure datetime index
+    # Ensure datetime index in UTC
     if not isinstance(df.index, pd.DatetimeIndex):
         if "timestamp" in df.columns:
             df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
@@ -62,6 +62,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df.index = pd.to_datetime(df.index, utc=True, errors="coerce")
             df = df[df.index.notna()]
+    else:
+        # normalize to UTC if needed
+        df.index = pd.to_datetime(df.index, utc=True, errors="coerce")
+        df = df[df.index.notna()]
 
     # Ensure numeric OHLCV columns are numeric
     ohlcv_suffixes = ("_Open", "_High", "_Low", "_Close", "_Volume")

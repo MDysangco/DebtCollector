@@ -117,6 +117,13 @@ def walkforward_runner(
                 feature_cols=feature_cols,
                 medians=medians
             )
+
+            # 🔍 DEBUG: inspect EMA-related columns in test_df
+            print("TEST_DF EMA columns:", [c for c in test_df.columns if "EMA" in c])
+            print("TEST_DF FAST columns:", [c for c in test_df.columns if "FAST" in c])
+            print("TEST_DF SLOW columns:", [c for c in test_df.columns if "SLOW" in c])
+            print("TEST_DF CLOSE columns:", [c for c in test_df.columns if "Close" in c])
+
         except Exception as e:
             if verbose:
                 print(f"Fold {fold}: build_signals_fn error: {e}. Skipping.")
@@ -150,11 +157,33 @@ def walkforward_runner(
             # use config values for execution logic
             signals = apply_execution_logic(
                 raw_signals,
-                global_threshold= config.GLOBAL_THRESHOLD,
-                per_symbol_floor= config.PER_SYMBOL_FLOOR,
-                margin= config.MARGIN,
-                cooldown_hours= config.COOLDOWN_HOURS,
+                global_threshold=config.GLOBAL_THRESHOLD,
+                per_symbol_floor=config.PER_SYMBOL_FLOOR,
+                margin=config.MARGIN,
+                cooldown_hours=config.COOLDOWN_HOURS,
+                thresholds=thresholds,
             )
+
+            # === DEBUG: inspect EMA values deeper in the window ===
+            try:
+                print("\n--- EMA FAST (C1) ROWS 10–20 ---")
+                print(signals.iloc[10:20][["timestamp", "symbol", "C1_EMA_fast", "final_signal"]])
+            except Exception as e:
+                print("C1 EMA debug error:", e)
+
+            # === PER-SYMBOL EMA DIAGNOSTICS ===
+            try:
+                print("\n--- PER-SYMBOL EMA DIAGNOSTICS ---")
+                for sym in sorted(signals["symbol"].unique()):
+                    ema_col = f"{sym}_EMA_fast"
+                    if ema_col in signals.columns:
+                        subset = signals[signals["symbol"] == sym].iloc[10:20]
+                        vals = subset[ema_col].dropna().head(3).values
+                        print(f"{sym}: EMA_fast sample:", vals if len(vals) else "ALL NaN in this slice")
+                    else:
+                        print(f"{sym}: EMA_fast column missing")
+            except Exception as e:
+                print("EMA diagnostic error:", e)
 
         except Exception as e:
             if verbose:
