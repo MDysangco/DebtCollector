@@ -8,8 +8,8 @@ MAX_FOLDS: Optional[int] = 3  # set to int for quick smoke runs
 
 # Execution settings
 GLOBAL_THRESHOLD = 0.34
-PER_SYMBOL_FLOOR = 0.33
-MARGIN = 0.01
+PER_SYMBOL_FLOOR = 0.30
+MARGIN = 0.00
 COOLDOWN_HOURS = 48
 
 # Imputation

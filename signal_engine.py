@@ -1,4 +1,6 @@
 import pandas as pd
+from sqlalchemy.util import symbol
+
 
 def build_raw_signals(test_df, models, feature_cols, medians):
     rows = []
@@ -48,43 +50,58 @@ def build_raw_signals(test_df, models, feature_cols, medians):
 
     return raw
 
-def apply_execution_logic(raw_signals,
-                          global_threshold,
-                          per_symbol_floor,
-                          margin,
-                          cooldown_hours,
-                          thresholds=None):
-
-    print(">>> USING PATCHED EXECUTION LOGIC (V1) <<<")
+def apply_execution_logic(
+    raw_signals,
+    test_df,
+    global_threshold,
+    per_symbol_floor,
+    margin,
+    cooldown_hours,
+    thresholds=None,
+):
+    print(">>> USING PATCHED EXECUTION LOGIC (V1 + Trend Persistence FIXED) <<<")
 
     df = raw_signals.copy()
-
-    print("EMA columns:", [c for c in df.columns if "EMA" in c])
-    print("FAST columns:", [c for c in df.columns if "FAST" in c])
-    print("SLOW columns:", [c for c in df.columns if "SLOW" in c])
-    print("EMA columns in raw_signals:", [c for c in df.columns if "EMA" in c])
-
-    df["final_signal"] = 0
     df = df.sort_values(["timestamp", "symbol"])
+    df["final_signal"] = 0
 
-    # thresholds dict from training
     if thresholds is None:
         thresholds = {}
 
     last_entry_time = {}
+    N = 3  # trend persistence window (bars)
 
     for idx, row in df.iterrows():
         ts = row["timestamp"]
         sym = row["symbol"]
         prob = row["prob_long"]
 
-        # --- EMA50 Trend Filter (using EMA_FAST = 50) ---
-        ema_col = f"{sym}_EMA_fast"
+        # --- Column names in wide test_df ---
+        ema_fast_col = f"{sym}_EMA_fast"
+        ema_slow_col = f"{sym}_EMA_slow"
         close_col = f"{sym}_Close"
 
-        if ema_col in df.columns and close_col in df.columns:
-            ema50 = row[ema_col]
-            close = row[close_col]
+        # --- Trend persistence filter: EMA_fast > EMA_slow for last N bars ---
+        if ema_fast_col in test_df.columns and ema_slow_col in test_df.columns:
+            # look back on wide frame using timestamp index
+            window = test_df.loc[:ts].tail(N)
+
+            # require at least N rows of history
+            if len(window) < N:
+                continue
+
+            # if any bar has EMA_fast <= EMA_slow → skip
+            if (window[ema_fast_col] <= window[ema_slow_col]).any():
+                continue
+
+        # --- EMA50 trend filter (price above EMA_fast) ---
+        if ema_fast_col in test_df.columns and close_col in test_df.columns:
+            window = test_df.loc[:ts].tail(1)
+            if len(window) == 0:
+                continue
+
+            ema50 = window[ema_fast_col].iloc[0]
+            close = window[close_col].iloc[0]
 
             if pd.notna(ema50) and pd.notna(close):
                 if close < ema50:
@@ -106,3 +123,4 @@ def apply_execution_logic(raw_signals,
             last_entry_time[sym] = ts
 
     return df
+

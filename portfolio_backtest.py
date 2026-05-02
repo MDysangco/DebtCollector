@@ -19,6 +19,9 @@ def backtest_portfolio(df, signal_configs, periods=None):
     entry_idx = {p: None for p in prefixes}
     notional = {p: 0.0 for p in prefixes}
 
+    # track previous signal per prefix for flip-only entries
+    prev_sig = {p: 0 for p in prefixes}
+
     trades = []
 
     # Universe selection
@@ -58,16 +61,20 @@ def backtest_portfolio(df, signal_configs, periods=None):
             ):
                 continue
 
-            sig = int(signal_configs[prefix]["full_final_signal"][i])
+            sig_series = signal_configs[prefix]["full_final_signal"]
+            sig = int(sig_series[i])
+            prev = int(prev_sig[prefix])
+
+            # flip-only entry trigger: 0 -> 1
+            flip_long_entry = (prev == 0 and sig == 1)
 
             # Forced exit if coin not in universe
             forced_exit = prefix not in active
 
-            # --- LONG / SHORT ENTRY LOGIC ---
+            # --- LONG ENTRY LOGIC (flip-only, position-aware) ---
             if positions[prefix] == 0 and not forced_exit:
 
-                # LONG ENTRY
-                if sig == 1:
+                if flip_long_entry:
                     positions[prefix] = 1
                     entry_price[prefix] = price_now
                     entry_time[prefix] = ts
@@ -78,37 +85,23 @@ def backtest_portfolio(df, signal_configs, periods=None):
 
                     equity -= alloc * FEE_RATE  # entry fee
 
-                # SHORT ENTRY
-                elif sig == -1:
-                    positions[prefix] = -1
-                    entry_price[prefix] = price_now
-                    entry_time[prefix] = ts
-                    entry_idx[prefix] = i
-
-                    alloc = equity / len(prefixes)
-                    notional[prefix] = alloc
-
-                    equity -= alloc * FEE_RATE  # entry fee
-
-
-            # --- EXIT LOGIC (LONG OR SHORT) ---
+            # --- EXIT LOGIC (LONG ONLY, no exit on sig==0) ---
             elif positions[prefix] != 0:
 
                 bars_held = i - entry_idx[prefix]
 
                 # Long PnL: (price_now - entry_price) / entry_price
-                # Short PnL: (entry_price - price_now) / entry_price
                 if positions[prefix] == 1:
                     pnl_pct = (price_now - entry_price[prefix]) / entry_price[prefix]
-                else:  # SHORT
+                else:
+                    # placeholder for future short logic
                     pnl_pct = (entry_price[prefix] - price_now) / entry_price[prefix]
 
                 exit_now = (
-                        sig == 0 or
-                        forced_exit or
-                        pnl_pct <= STOP_LOSS or
-                        pnl_pct >= TAKE_PROFIT or
-                        bars_held >= MAX_HOLD
+                    forced_exit or
+                    pnl_pct <= STOP_LOSS or
+                    pnl_pct >= TAKE_PROFIT or
+                    bars_held >= MAX_HOLD
                 )
 
                 if exit_now:
@@ -132,12 +125,16 @@ def backtest_portfolio(df, signal_configs, periods=None):
                     entry_idx[prefix] = None
                     notional[prefix] = 0.0
 
+            # update prev signal for next bar
+            prev_sig[prefix] = sig
+
         equity_curve.append(equity)
 
     # Close open positions at final bar
     final_ts = df.index[-1]
     for prefix in prefixes:
         if positions[prefix] != 0:
+            price_now = df.iloc[-1][f"{prefix}_Close"]
             if positions[prefix] == 1:
                 pnl_pct = (price_now - entry_price[prefix]) / entry_price[prefix]
             else:
