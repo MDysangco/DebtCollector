@@ -24,9 +24,21 @@ VOL_LOOKBACK = 24           # bars for volatility calc
 VOL_THRESHOLD = 0.01        # min std dev of returns to allow entries
 MAX_TRADES_PER_SYMBOL = 20  # per fold, per symbol
 
+# trend exit
 TREND_EMA_WINDOW_EXIT = 150
 TREND_EXIT_BUFFER = 0.05
 TREND_MIN_HOLD_BARS = 12
+
+# ATR-based exits
+ATR_WINDOW = 14            # ATR smoothing window (classic 14)
+ATR_TP_MULT = 2.0          # take-profit = entry + 2 * ATR
+ATR_SL_MULT = 2.0          # stop-loss = entry - 2 * ATR
+
+# ATR-based volatility filter (optional)
+USE_ATR_VOL_FILTER = False # set True to enable ATR volatility gating
+ATR_VOL_MIN = 0.0          # min ATR% of price (e.g., 0.01 = 1%)
+ATR_VOL_MAX = 1.0          # max ATR% of price (e.g., 0.10 = 10%)
+
 
 # Imputation
 IMPUTATION_METHOD: str = "median"  # options: "median", "ffill_bfill"
