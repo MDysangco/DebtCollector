@@ -12,6 +12,22 @@ PER_SYMBOL_FLOOR = 0.30
 MARGIN = 0.00
 COOLDOWN_HOURS = 48
 
+# backtest behavior
+TAKE_PROFIT = 0.08          # you already have something like this
+STOP_LOSS = -0.05
+MAX_HOLD_BARS = 48          # e.g. 2 days on 1h bars
+
+# new upgrades
+MIN_HOLD_BARS = 6           # e.g. 6 hours minimum
+REENTRY_COOLDOWN_BARS = 6   # bars after exit before re-entry allowed
+VOL_LOOKBACK = 24           # bars for volatility calc
+VOL_THRESHOLD = 0.01        # min std dev of returns to allow entries
+MAX_TRADES_PER_SYMBOL = 20  # per fold, per symbol
+
+TREND_EMA_WINDOW_EXIT = 150
+TREND_EXIT_BUFFER = 0.05
+TREND_MIN_HOLD_BARS = 12
+
 # Imputation
 IMPUTATION_METHOD: str = "median"  # options: "median", "ffill_bfill"
 

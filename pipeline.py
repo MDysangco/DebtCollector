@@ -207,6 +207,7 @@ def walkforward_runner(
         # -------------------------------
         # CSV LOGGING
         # -------------------------------
+
         fold_row = {
             "fold": fold,
             "train_start": train_start,
@@ -216,7 +217,10 @@ def walkforward_runner(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "fold_return_pct": stats.get("return_pct") if isinstance(stats, dict) else None,
             "max_dd": stats.get("max_dd") if isinstance(stats, dict) else None,
-            "trades": len(trades),
+            # OLD:
+            # "trades": len(signals),
+            # NEW:
+            "trades": len(trades) if isinstance(trades, list) else None,
             "avg_entry_prob": float(signals["prob_long"].mean()) if len(signals) else None,
         }
 

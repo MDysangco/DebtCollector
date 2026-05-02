@@ -1,42 +1,36 @@
-def build_backtest_signal_configs(signals_df, price_window):
+import pandas as pd
+
+def build_backtest_signal_configs(signals_df: pd.DataFrame, price_window: pd.DataFrame):
     """
-    Convert flat signals DataFrame into the nested dict structure
-    expected by backtest_portfolio().
+    Adapt execution signals into per-symbol configs for the portfolio backtest.
 
-    Output format:
-    {
-        "C1":  {"full_final_signal": [...]},
-        "C10": {"full_final_signal": [...]},
-        ...
-    }
+    Expected signals_df columns:
+      - timestamp
+      - symbol
+      - final_signal (0/1)
+      - prob_long (optional, for logging)
     """
+    # ensure sorted
+    signals_df = signals_df.sort_values(["timestamp", "symbol"]).copy()
 
-    idx = price_window.index
+    configs = {}
 
-    # Extract prefixes from price columns
-    prefixes = sorted({c.split("_")[0] for c in price_window.columns})
+    for symbol, grp in signals_df.groupby("symbol"):
+        # entry bars = 0 -> 1 flips
+        grp = grp.sort_values("timestamp")
+        sig = grp["final_signal"].fillna(0).astype(int)
+        flips = (sig.shift(1, fill_value=0) == 0) & (sig == 1)
+        entry_times = grp.loc[flips, "timestamp"].tolist()
 
-    # Initialize output dict
-    signal_configs = {p: {"full_final_signal": [0] * len(idx)} for p in prefixes}
+        if not entry_times:
+            continue
 
-    # Your execution logic uses "final_signal"
-    signal_col = "final_signal"
+        configs[symbol] = {
+            "symbol": symbol,
+            "side": "LONG",
+            "entries": entry_times,
+            # optional: keep probs for diagnostics
+            "entry_probs": grp.loc[flips, "prob_long"].tolist() if "prob_long" in grp.columns else None,
+        }
 
-    if signal_col not in signals_df.columns:
-        print("[WF DEBUG] available signal columns:", signals_df.columns.tolist())
-        raise ValueError(f"Expected signal column '{signal_col}' not found in signals_df")
-
-    # Build fast lookup: (timestamp, symbol) -> signal
-    sig_map = {
-        (row.timestamp, row.symbol): int(getattr(row, signal_col))
-        for row in signals_df.itertuples()
-    }
-
-    # Fill per-prefix arrays aligned to price_window index
-    for i, ts in enumerate(idx):
-        for prefix in prefixes:
-            key = (ts, prefix)
-            if key in sig_map:
-                signal_configs[prefix]["full_final_signal"][i] = sig_map[key]
-
-    return signal_configs
+    return configs

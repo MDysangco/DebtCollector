@@ -1,177 +1,187 @@
+import pandas as pd
 import numpy as np
+import config
 
-FEE_RATE = 0.001   # 0.1% per side
-STOP_LOSS = -0.05  # -5%
-TAKE_PROFIT = 0.08 # +8%
-MAX_HOLD = 48      # bars
+def backtest_portfolio(price_window: pd.DataFrame, signal_configs: dict):
+    """
+    Multi-symbol portfolio backtest with:
+      - TP / SL / max-hold exits
+      - trend-aware exit (EMA break)
+      - min holding period
+      - re-entry cooldown
+      - volatility filter
+      - per-symbol trade cap
 
+    price_window: wide DF, columns like 'C1_Close', 'C10_Close', ...
+    signal_configs: dict[symbol] -> {
+        'symbol': str,
+        'side': 'LONG',
+        'entries': [timestamps],
+    }
+    """
+    if price_window.empty or not signal_configs:
+        return {"return_pct": 0.0, "max_dd": 0.0}, []
 
-def backtest_portfolio(df, signal_configs, periods=None):
-    equity0 = 10_000.0
-    equity = equity0
-    equity_curve = []
+    # infer bar index
+    idx = price_window.index
 
-    prefixes = list(signal_configs.keys())
+    # precompute close series per symbol
+    close_map = {}
+    ema_map = {}
+    vol_ok_map = {}
 
-    positions = {p: 0 for p in prefixes}
-    entry_price = {p: None for p in prefixes}
-    entry_time = {p: None for p in prefixes}
-    entry_idx = {p: None for p in prefixes}
-    notional = {p: 0.0 for p in prefixes}
+    for col in price_window.columns:
+        if not col.endswith("_Close"):
+            continue
+        symbol = col[:-6]  # strip '_Close'
+        close = price_window[col].astype(float)
+        close_map[symbol] = close
 
-    # track previous signal per prefix for flip-only entries
-    prev_sig = {p: 0 for p in prefixes}
+        # trend EMA for exit (slower)
+        ema = close.ewm(span=config.TREND_EMA_WINDOW_EXIT, adjust=False).mean()
+        ema_map[symbol] = ema
 
+        # volatility filter
+        ret = close.pct_change()
+        vol = ret.rolling(config.VOL_LOOKBACK).std()
+        vol_ok_map[symbol] = vol > config.VOL_THRESHOLD
+
+    equity = config.INITIAL_CAPITAL if hasattr(config, "INITIAL_CAPITAL") else 10000.0
+    peak_equity = equity
     trades = []
 
-    # Universe selection
-    if periods:
-        periods = sorted(periods, key=lambda x: x["rebalance_time"])
+    # per-symbol state
+    state = {
+        sym: {
+            "position": 0,
+            "entry_price": None,
+            "entry_time": None,
+            "bars_held": 0,
+            "cooldown_until": None,
+            "trade_count": 0,
+        }
+        for sym in signal_configs.keys()
+    }
 
-        def get_active(ts):
-            active = prefixes
-            for p in periods:
-                if ts >= p["rebalance_time"]:
-                    active = p["approved"]
-                else:
-                    break
-            return set(active)
-    else:
-        def get_active(ts):
-            return set(prefixes)
+    # convert entries to fast lookup per symbol
+    entry_sets = {
+        sym: set(pd.to_datetime(cfg["entries"]))
+        for sym, cfg in signal_configs.items()
+    }
 
-    n = len(df)
-
-    for i in range(n - 1):
-        ts = df.index[i]
-        active = get_active(ts)
-
-        for prefix in prefixes:
-            close_col = f"{prefix}_Close"
-            if close_col not in df.columns:
+    for t in idx:
+        for sym, cfg in signal_configs.items():
+            if sym not in close_map:
                 continue
 
-            price_now = df.iloc[i][close_col]
-            price_next = df.iloc[i + 1][close_col]
+            close = close_map[sym]
+            ema = ema_map[sym]
+            vol_ok = vol_ok_map[sym]
+            st = state[sym]
 
-            if (
-                price_now is None or price_next is None or
-                np.isnan(price_now) or np.isnan(price_next) or
-                price_now <= 0
-            ):
+            if pd.isna(close.get(t, np.nan)):
                 continue
 
-            sig_series = signal_configs[prefix]["full_final_signal"]
-            sig = int(sig_series[i])
-            prev = int(prev_sig[prefix])
+            price_t = close.loc[t]
+            ema_t = ema.loc[t]
+            vol_ok_t = bool(vol_ok.loc[t]) if t in vol_ok.index else False
 
-            # flip-only entry trigger: 0 -> 1
-            flip_long_entry = (prev == 0 and sig == 1)
+            # update bars held if in position
+            if st["position"] != 0 and st["entry_time"] is not None:
+                st["bars_held"] += 1
 
-            # Forced exit if coin not in universe
-            forced_exit = prefix not in active
+            # --- exit logic if in position ---
+            if st["position"] != 0:
+                entry_price = st["entry_price"]
+                pnl_pct = (price_t / entry_price) - 1.0
 
-            # --- LONG ENTRY LOGIC (flip-only, position-aware) ---
-            if positions[prefix] == 0 and not forced_exit:
+                exit_reason = None
 
-                if flip_long_entry:
-                    positions[prefix] = 1
-                    entry_price[prefix] = price_now
-                    entry_time[prefix] = ts
-                    entry_idx[prefix] = i
+                # 1) TP / SL
+                if pnl_pct >= config.TAKE_PROFIT:
+                    exit_reason = "TP"
+                elif pnl_pct <= config.STOP_LOSS:
+                    exit_reason = "SL"
 
-                    alloc = equity / len(prefixes)
-                    notional[prefix] = alloc
+                # 2) max hold
+                if exit_reason is None and st["bars_held"] >= config.MAX_HOLD_BARS:
+                    exit_reason = "MAX_HOLD"
 
-                    equity -= alloc * FEE_RATE  # entry fee
+                # 3) trend break (price < EMA * (1 - buffer)) after min hold
+                if (
+                    exit_reason is None
+                    and st["bars_held"] >= config.TREND_MIN_HOLD_BARS
+                    and price_t < ema_t * (1.0 - config.TREND_EXIT_BUFFER)
+                ):
+                    exit_reason = "TREND_BREAK"
 
-            # --- EXIT LOGIC (LONG ONLY, no exit on sig==0) ---
-            elif positions[prefix] != 0:
-
-                bars_held = i - entry_idx[prefix]
-
-                # Long PnL: (price_now - entry_price) / entry_price
-                if positions[prefix] == 1:
-                    pnl_pct = (price_now - entry_price[prefix]) / entry_price[prefix]
-                else:
-                    # placeholder for future short logic
-                    pnl_pct = (entry_price[prefix] - price_now) / entry_price[prefix]
-
-                exit_now = (
-                    forced_exit or
-                    pnl_pct <= STOP_LOSS or
-                    pnl_pct >= TAKE_PROFIT or
-                    bars_held >= MAX_HOLD
-                )
-
-                if exit_now:
-                    pnl = notional[prefix] * pnl_pct
-                    fee = notional[prefix] * FEE_RATE
-                    equity += pnl - fee
-
+                if exit_reason is not None:
                     trades.append({
-                        "symbol": prefix,
-                        "entry_time": entry_time[prefix],
-                        "exit_time": ts,
-                        "entry_price": float(entry_price[prefix]),
-                        "exit_price": float(price_now),
+                        "symbol": sym,
+                        "entry_time": st["entry_time"],
+                        "exit_time": t,
+                        "entry_price": float(entry_price),
+                        "exit_price": float(price_t),
                         "pnl_pct": float(pnl_pct),
-                        "side": "LONG" if positions[prefix] == 1 else "SHORT",
+                        "side": "LONG",
+                        "exit_reason": exit_reason,
                     })
 
-                    positions[prefix] = 0
-                    entry_price[prefix] = None
-                    entry_time[prefix] = None
-                    entry_idx[prefix] = None
-                    notional[prefix] = 0.0
+                    # flat position
+                    st["position"] = 0
+                    st["entry_price"] = None
+                    st["entry_time"] = None
+                    st["bars_held"] = 0
+                    st["cooldown_until"] = t + (idx[1] - idx[0]) * config.REENTRY_COOLDOWN_BARS
+                    st["trade_count"] += 1
 
-            # update prev signal for next bar
-            prev_sig[prefix] = sig
+            # --- entry logic if flat ---
+            if st["position"] == 0:
+                # per-symbol trade cap
+                if st["trade_count"] >= config.MAX_TRADES_PER_SYMBOL:
+                    continue
 
-        equity_curve.append(equity)
+                # cooldown
+                if st["cooldown_until"] is not None and t < st["cooldown_until"]:
+                    continue
 
-    # Close open positions at final bar
-    final_ts = df.index[-1]
-    for prefix in prefixes:
-        if positions[prefix] != 0:
-            price_now = df.iloc[-1][f"{prefix}_Close"]
-            if positions[prefix] == 1:
-                pnl_pct = (price_now - entry_price[prefix]) / entry_price[prefix]
-            else:
-                pnl_pct = (entry_price[prefix] - price_now) / entry_price[prefix]
+                # volatility filter
+                if not vol_ok_t:
+                    continue
 
-            pnl = notional[prefix] * pnl_pct
-            fee = notional[prefix] * FEE_RATE
-            equity += pnl - fee
+                # entry signal?
+                if t in entry_sets[sym]:
+                    st["position"] = 1
+                    st["entry_price"] = price_t
+                    st["entry_time"] = t
+                    st["bars_held"] = 0
 
-            trades.append({
-                "symbol": prefix,
-                "entry_time": entry_time[prefix],
-                "exit_time": final_ts,
-                "entry_price": float(entry_price[prefix]),
-                "exit_price": float(price_now),
-                "pnl_pct": float(pnl_pct),
-                "side": "LONG" if positions[prefix] == 1 else "SHORT",
-            })
+        # portfolio equity mark-to-market (simple: equal weight per open position)
+        open_positions = [s for s in state.values() if s["position"] != 0]
+        if open_positions:
+            # assume 1 unit per position for equity curve shape
+            # (you can later scale by capital / n_positions)
+            # here we just track relative curve via average pnl
+            pass  # equity curve not strictly needed for stats below
 
-    # Stats
-    if not equity_curve:
-        return {
-            "initial": equity0,
-            "final": equity0,
-            "return_pct": 0.0,
-            "max_dd": 0.0,
-        }, trades
+    # compute portfolio stats from trades
+    if not trades:
+        return {"return_pct": 0.0, "max_dd": 0.0}, []
 
-    eq = np.array(equity_curve)
-    peak = np.maximum.accumulate(eq)
-    dd = (eq - peak) / peak
+    # simple equity curve: start at 1.0, apply trade returns sequentially
+    eq = [1.0]
+    for tr in trades:
+        eq.append(eq[-1] * (1.0 + tr["pnl_pct"]))
+    eq = pd.Series(eq)
+    return_pct = eq.iloc[-1] - 1.0
+    roll_max = eq.cummax()
+    dd = (eq / roll_max) - 1.0
+    max_dd = dd.min()
 
     stats = {
-        "initial": equity0,
-        "final": float(eq[-1]),
-        "return_pct": float(eq[-1] / equity0 - 1) * 100,
-        "max_dd": float(dd.min()) * 100,
+        "return_pct": float(return_pct),
+        "max_dd": float(max_dd),
+        "n_trades": len(trades),
     }
 
     return stats, trades
