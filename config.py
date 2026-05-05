@@ -1,69 +1,111 @@
-from typing import Optional, Dict, Any
+# ============================================================
+# LIVE SIGNAL / EXECUTION SETTINGS
+# ============================================================
+from numba.core.types import none
 
-# Walkforward windows
-WF_TRAIN_DAYS: int = 180
-WF_TEST_DAYS: int = 30
-WF_STEP_DAYS: int = 30
-MAX_FOLDS: Optional[int] = 3  # set to int for quick smoke runs
+# Class probability thresholds
+BUY_PROB_THRESHOLD = 0.55
+SELL_PROB_THRESHOLD = 0.55
+TREND_EMA_LENGTH = 50
 
-# Execution settings
-GLOBAL_THRESHOLD = 0.34
-PER_SYMBOL_FLOOR = 0.30
-MARGIN = 0.00
+# Volatility filter
+VOL_FILTER_WINDOW = 12
+VOL_MIN_THRESHOLD = 0.002
+
+# ============================================================
+# WALK-FORWARD SETTINGS
+# ============================================================
+
+WF_TRAIN_DAYS = 90
+WF_TEST_DAYS = 30
+WF_STEP_DAYS = 30
+MAX_FOLDS = None
+
+
+# ============================================================
+# LABEL SETTINGS
+# ============================================================
+
+LABEL_HORIZON = 24
+LABEL_UP_THRESH = 0.02
+LABEL_DOWN_THRESH = -0.02
+
+
+# ============================================================
+# FEATURE SETTINGS
+# ============================================================
+
+RSI_LENGTH = 14
+ATR_LENGTH = 14
+
+MOM_WINDOWS = [8, 24]
+VOL_WINDOWS = [8, 24]
+
+
+# ============================================================
+# EXECUTION / SIGNAL SETTINGS
+# ============================================================
+
+GLOBAL_THRESHOLD = 0.49
+PER_SYMBOL_FLOOR = 0.53
+MARGIN = 0.01
 COOLDOWN_HOURS = 48
 
-# backtest behavior
-TAKE_PROFIT = 0.08          # you already have something like this
-STOP_LOSS = -0.05
-MAX_HOLD_BARS = 48          # e.g. 2 days on 1h bars
-
-# new upgrades
-MIN_HOLD_BARS = 6           # e.g. 6 hours minimum
-REENTRY_COOLDOWN_BARS = 6   # bars after exit before re-entry allowed
-VOL_LOOKBACK = 24           # bars for volatility calc
-VOL_THRESHOLD = 0.01        # min std dev of returns to allow entries
-MAX_TRADES_PER_SYMBOL = 20  # per fold, per symbol
-
-# trend exit
-TREND_EMA_WINDOW_EXIT = 150
-TREND_EXIT_BUFFER = 0.05
-TREND_MIN_HOLD_BARS = 12
-
-# ATR-based exits
-ATR_WINDOW = 14            # ATR smoothing window (classic 14)
-ATR_TP_MULT = 2.0          # take-profit = entry + 2 * ATR
-ATR_SL_MULT = 2.0          # stop-loss = entry - 2 * ATR
-
-# ATR-based volatility filter (optional)
-USE_ATR_VOL_FILTER = False # set True to enable ATR volatility gating
-ATR_VOL_MIN = 0.0          # min ATR% of price (e.g., 0.01 = 1%)
-ATR_VOL_MAX = 1.0          # max ATR% of price (e.g., 0.10 = 10%)
+PER_SYMBOL_COOLDOWN = {}  # e.g. {"C1": 24}
 
 
-# Imputation
-IMPUTATION_METHOD: str = "median"  # options: "median", "ffill_bfill"
+# ============================================================
+# MODEL TRAINING SETTINGS
+# ============================================================
 
-# Logging and debug
-DEBUG_THRESHOLD_SAMPLE: int = 20
-PRINT_SETTINGS: bool = True
+TRAIN_SPLIT_Q = 0.8
 
-# Per-symbol overrides (optional)
-# Example: {"C1": 24, "C10": 48}
-PER_SYMBOL_COOLDOWN: Dict[str, int] = {}
+XGB_PARAMS = {
+    "max_depth": 6,
+    "learning_rate": 0.05,
+    "n_estimators": 300,
+    "subsample": 0.9,
+    "colsample_bytree": 0.9,
+    "objective": "multi:softprob",
+    "num_class": 3,
+}
 
-# Convenience accessor if you prefer a dict
-def as_dict() -> Dict[str, Any]:
-    return {
-        "WF_TRAIN_DAYS": WF_TRAIN_DAYS,
-        "WF_TEST_DAYS": WF_TEST_DAYS,
-        "WF_STEP_DAYS": WF_STEP_DAYS,
-        "MAX_FOLDS": MAX_FOLDS,
-        "GLOBAL_THRESHOLD": GLOBAL_THRESHOLD,
-        "PER_SYMBOL_FLOOR": PER_SYMBOL_FLOOR,
-        "MARGIN": MARGIN,
-        "COOLDOWN_HOURS": COOLDOWN_HOURS,
-        "IMPUTATION_METHOD": IMPUTATION_METHOD,
-        "DEBUG_THRESHOLD_SAMPLE": DEBUG_THRESHOLD_SAMPLE,
-        "PRINT_SETTINGS": PRINT_SETTINGS,
-        "PER_SYMBOL_COOLDOWN": PER_SYMBOL_COOLDOWN,
-    }
+
+# ============================================================
+# BACKTEST RISK MODEL
+# ============================================================
+
+STARTING_EQUITY = 10_000.0
+
+MAX_PORTFOLIO_RISK_FRAC = 0.20
+MAX_PER_COIN_RISK_FRAC = 0.05
+RISK_PER_TRADE_FRAC = 0.005
+
+FEE_BPS = 5
+SLIPPAGE_BPS = 5
+
+
+# ============================================================
+# DB LOADER SETTINGS
+# ============================================================
+
+COIN_IDS = None
+INTERVAL_ID = 6
+
+
+# ============================================================
+# DEBUG SETTINGS
+# ============================================================
+
+PRINT_SETTINGS = True
+DEBUG_THRESHOLD_SAMPLE = 20
+
+
+# ============================================================
+# CONVENIENCE ACCESSOR
+# ============================================================
+
+def as_dict():
+    return {k: v for k, v in globals().items() if k.isupper()}
+
+
