@@ -1,8 +1,10 @@
 import pandas as pd
+
 from model_train import train_model, time_split
 from features_and_labels import merge_features_and_labels
 from backtest_portfolio import backtest_portfolio
-from db_loader import load_price_data_from_db
+
+from ZypryxApi import ZypryxApi
 
 from config import (
     WF_TRAIN_DAYS, WF_TEST_DAYS, WF_STEP_DAYS,
@@ -11,6 +13,73 @@ from config import (
 )
 
 
+# ---------------------------------------------------------
+# LOAD PRICE DATA FROM API
+# ---------------------------------------------------------
+def load_price_data_from_api(client: ZypryxApi, coin_ids, interval_id, start=None, end=None):
+    frames = []
+
+    for cid in coin_ids:
+        kl = client.get_klines(cid, interval_id, start, end)
+        if not kl:
+            print(f"[WARN] Coin {cid} returned NO klines.")
+            continue
+
+        df = pd.DataFrame(kl)
+
+        df["Timestamp"] = pd.to_datetime(df["klineOpenTime"], unit="ms", utc=True)
+
+        df = df.rename(columns={
+            "openPrice": "Open",
+            "highPrice": "High",
+            "lowPrice": "Low",
+            "closePrice": "Close",
+            "volume": "Volume",
+        })
+
+        df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume"]]
+        df = df.drop_duplicates(subset=["Timestamp"])
+
+        prefix = f"C{cid}"
+        df = df.rename(columns={
+            "Open": f"{prefix}_Open",
+            "High": f"{prefix}_High",
+            "Low": f"{prefix}_Low",
+            "Close": f"{prefix}_Close",
+            "Volume": f"{prefix}_Volume",
+        })
+
+        frames.append(df)
+
+    if not frames:
+        raise ValueError("No coins returned klines.")
+
+    merged = frames[0]
+    for df in frames[1:]:
+        merged = merged.merge(df, on="Timestamp", how="outer")
+
+    merged = merged.sort_values("Timestamp").set_index("Timestamp")
+    merged = merged[~merged.index.duplicated(keep="first")]
+
+    # Align start window
+    first_valids = []
+    for col in merged.columns:
+        fv = merged[col].first_valid_index()
+        if fv is not None:
+            first_valids.append(fv)
+
+    start_ts = max(first_valids)
+    merged = merged.loc[start_ts:]
+
+    print(f"[INFO] Aligned window starts at: {start_ts}")
+    print(f"[INFO] Using {len(merged.columns) // 5} valid coins")
+
+    return merged
+
+
+# ---------------------------------------------------------
+# SINGLE BACKTEST
+# ---------------------------------------------------------
 def run_single_backtest(price_df, horizon=LABEL_HORIZON):
     merged = merge_features_and_labels(price_df)
 
@@ -21,25 +90,21 @@ def run_single_backtest(price_df, horizon=LABEL_HORIZON):
 
     model = train_model(X_train, y_train, X_val, y_val)
 
-    # Predict BUY/HOLD/SELL
     preds = model.predict(X_val)
     probs = model.predict_proba(X_val)
 
-    # Convert predictions to signals
     signals = []
     for (ts, sym), p, prob in zip(X_val.index, preds, probs):
+        price = price_df.loc[ts, f"{sym}_Close"]
+
         if p == 2:  # BUY
-            price = price_df.loc[ts, f"{sym}_Close"]
-            atr = price_df.loc[ts, f"{sym}_Close"]  # placeholder if needed
             signals.append({
                 "timestamp": ts,
                 "symbol": sym,
                 "side": "BUY",
                 "price": float(price),
-                "atr": float(atr),
             })
         elif p == 0:  # SELL
-            price = price_df.loc[ts, f"{sym}_Close"]
             signals.append({
                 "timestamp": ts,
                 "symbol": sym,
@@ -51,6 +116,9 @@ def run_single_backtest(price_df, horizon=LABEL_HORIZON):
     return stats, trades, model
 
 
+# ---------------------------------------------------------
+# WALK-FORWARD TUNING
+# ---------------------------------------------------------
 def run_wf_tuning(price_df):
     all_stats = []
     all_trades = []
@@ -80,7 +148,6 @@ def run_wf_tuning(price_df):
         X_train, y_train, X_val, y_val = time_split(merged, split_time)
         model = train_model(X_train, y_train, X_val, y_val)
 
-        # Predict on test window
         merged_test = merge_features_and_labels(df_test)
         preds = model.predict(merged_test.drop(columns=["label"]))
         probs = model.predict_proba(merged_test.drop(columns=["label"]))
@@ -102,8 +169,13 @@ def run_wf_tuning(price_df):
     return all_stats, all_trades
 
 
+# ---------------------------------------------------------
+# PIPELINE ENTRYPOINT
+# ---------------------------------------------------------
 def run_pipeline(use_tuning=False, horizon=LABEL_HORIZON):
-    price_df = load_price_data_from_db(coin_ids=COIN_IDS, interval_id=INTERVAL_ID)
+    client = ZypryxApiClient(config.API_URL, config.API_TOKEN)
+
+    price_df = load_price_data_from_api(client, COIN_IDS, INTERVAL_ID)
 
     if use_tuning:
         stats, trades = run_wf_tuning(price_df)

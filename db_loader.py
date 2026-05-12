@@ -1,81 +1,73 @@
 import pandas as pd
-import urllib
-from sqlalchemy import create_engine
 
-from config import COIN_IDS, INTERVAL_ID
-
-
-# ---------------------------------------------------------
-# SHARED ENGINE (TCP, stable, no Named Pipes)
-# ---------------------------------------------------------
-def get_engine():
-    params = urllib.parse.quote_plus(
-        "DRIVER=ODBC Driver 17 for SQL Server;"
-        "SERVER=(localdb)\\Development;"
-        "DATABASE=Candice;"
-        "Trusted_Connection=Yes;"
-        "Connection Timeout=30;"
-    )
-    return create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+from ZypryxApi import ZypryxApi
+from config import INTERVAL_ID
 
 
-# ---------------------------------------------------------
-# MAIN PRICE LOADER
-# ---------------------------------------------------------
-def load_price_data_from_db(coin_ids=None, interval_id=None):
+def load_price_data_from_api(client: ZypryxApi, coin_ids=None, interval_id=None, start=None, end=None):
     if interval_id is None:
         interval_id = INTERVAL_ID
 
-    engine = get_engine()
+    if coin_ids is None:
+        coin_ids
 
-    # 1. Pull ALL klines in one call
-    query = f"EXEC [dbo].[GetKlines] NULL, {interval_id}"
-    df = pd.read_sql(query, engine)
+    frames = []
 
-    if df.empty:
-        raise ValueError("GetKlines returned NO data.")
+    # Pull klines per coin via API
+    for cid in coin_ids:
+        kl = client.get_klines(cid, interval_id, start, end)
+        if not kl:
+            print(f"[WARN] Coin {cid} returned NO rows. Skipping.")
+            continue
 
-    # 2. Convert timestamp
-    df["Timestamp"] = pd.to_datetime(df["KlineOpenTime"], unit="ms", utc=True)
+        df = pd.DataFrame(kl)
 
-    # 3. Standardize column names
-    df = df.rename(columns={
-        "OpenPrice": "Open",
-        "HighPrice": "High",
-        "LowPrice": "Low",
-        "ClosePrice": "Close",
-        "Volume": "Volume",
-    })
+        df["Timestamp"] = pd.to_datetime(df["klineOpenTime"], unit="ms", utc=True)
 
-    # 4. Filter only requested coins (if coin_ids provided)
-    if isinstance(coin_ids, (list, tuple, set)) and len(coin_ids) > 0:
-        df = df[df["CoinId"].isin(coin_ids)]
+        df = df.rename(columns={
+            "openPrice": "Open",
+            "highPrice": "High",
+            "lowPrice": "Low",
+            "closePrice": "Close",
+            "volume": "Volume",
+        })
 
-    # 5. Pivot into wide format
-    wide = df.pivot_table(
-        index="Timestamp",
-        columns="CoinId",
-        values=["Open", "High", "Low", "Close", "Volume"]
-    )
+        df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume"]]
+        df = df.drop_duplicates(subset=["Timestamp"])
 
-    # Flatten MultiIndex columns
-    wide.columns = [f"C{cid}_{col}" for col, cid in wide.columns]
+        prefix = f"C{cid}"
+        df = df.rename(columns={
+            "Open": f"{prefix}_Open",
+            "High": f"{prefix}_High",
+            "Low": f"{prefix}_Low",
+            "Close": f"{prefix}_Close",
+            "Volume": f"{prefix}_Volume",
+        })
 
-    # 6. Sort, drop duplicates
-    wide = wide.sort_values("Timestamp")
-    wide = wide[~wide.index.duplicated(keep="first")]
+        frames.append(df)
 
-    # 7. Align start window
+    if not frames:
+        raise ValueError("No valid coins returned any klines.")
+
+    # Merge all coins
+    merged = frames[0]
+    for df in frames[1:]:
+        merged = merged.merge(df, on="Timestamp", how="outer")
+
+    merged = merged.sort_values("Timestamp").set_index("Timestamp")
+    merged = merged[~merged.index.duplicated(keep="first")]
+
+    # Align start window
     first_valids = []
-    for col in wide.columns:
-        fv = wide[col].first_valid_index()
+    for col in merged.columns:
+        fv = merged[col].first_valid_index()
         if fv is not None:
             first_valids.append(fv)
 
     start_ts = max(first_valids)
-    wide = wide.loc[start_ts:]
+    merged = merged.loc[start_ts:]
 
     print(f"[INFO] Aligned window starts at: {start_ts}")
-    print(f"[INFO] Using {len(wide.columns) // 5} valid coins")
+    print(f"[INFO] Using {len(merged.columns) // 5} valid coins")
 
-    return wide
+    return merged
