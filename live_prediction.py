@@ -24,7 +24,6 @@ async def load_coin_ids(api):
     coins = await api.get_active_coins()
     if not coins:
         raise ValueError("No active coins returned from API.")
-
     return [c["Id"] for c in coins]
 
 # ---------------------------------------------------------
@@ -48,7 +47,6 @@ def compute_trend_and_vol(price_df: pd.DataFrame):
     vol_df = pd.DataFrame(vol, index=price_df.index)
     return trend_df, vol_df
 
-
 # ---------------------------------------------------------
 # TRAIN MODEL
 # ---------------------------------------------------------
@@ -62,7 +60,6 @@ def train_full_model(price_df: pd.DataFrame):
 
     model = train_model(X, y, X, y)
     return model, features
-
 
 # ---------------------------------------------------------
 # LOAD PRICE DATA FROM API
@@ -78,7 +75,6 @@ async def load_price_data_from_api(api: ZypryxApi, coin_ids, interval_id):
 
         df = pd.DataFrame(kl)
 
-        # Normalize API → internal names
         df = df.rename(columns={
             "KlineOpenTime": "Timestamp",
             "OpenPrice": "Open",
@@ -88,13 +84,9 @@ async def load_price_data_from_api(api: ZypryxApi, coin_ids, interval_id):
             "Volume": "Volume",
         })
 
-        # Convert timestamp
         df["Timestamp"] = pd.to_datetime(df["Timestamp"].astype("int64"), unit="ms", utc=True)
-
-        # Keep only OHLCV
         df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume"]]
 
-        # Prefix for merging
         prefix = f"C{cid}"
         df = df.rename(columns={
             "Open": f"{prefix}_Open",
@@ -104,7 +96,6 @@ async def load_price_data_from_api(api: ZypryxApi, coin_ids, interval_id):
             "Volume": f"{prefix}_Volume",
         })
 
-        print("DF COLUMNS:", df.columns)
         frames.append(df)
 
     if not frames:
@@ -117,7 +108,6 @@ async def load_price_data_from_api(api: ZypryxApi, coin_ids, interval_id):
     merged = merged.sort_values("Timestamp").set_index("Timestamp")
     merged = merged[~merged.index.duplicated(keep="first")]
 
-    # Align start window
     first_valids = []
     for col in merged.columns:
         fv = merged[col].first_valid_index()
@@ -131,7 +121,6 @@ async def load_price_data_from_api(api: ZypryxApi, coin_ids, interval_id):
     print(f"[INFO] Using {len(merged.columns) // 5} valid coins")
 
     return merged
-
 
 # ---------------------------------------------------------
 # GENERATE LIVE SIGNALS
@@ -148,7 +137,6 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
     preds = model.predict(X_live)
     probs = model.predict_proba(X_live)
 
-    # Insert configuration via API
     config_id = await api.insert_configuration({
         "BuyProbabilityThreshold": config.BUY_PROB_THRESHOLD,
         "SellProbabilityThreshold": config.SELL_PROB_THRESHOLD,
@@ -186,7 +174,6 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
         else:
             final_signal = "HOLD"
 
-        # Insert reading via API
         await api.insert_reading({
             "TimeStampUTC": latest_ts.isoformat(),
             "CoinId": int(sym[1:]),
@@ -219,38 +206,35 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
 
     return signals
 
-
 # ---------------------------------------------------------
 # MAIN LOOP
 # ---------------------------------------------------------
-async def main():
-    print("Running LIVE prediction...\n")
-
-    async with ZypryxApi(config.API_URL, config.API_TOKEN) as api:
-
-        # dynamically load active coins
-        coin_ids = await load_coin_ids(api)
-
-        price_df = await load_price_data_from_api(api, coin_ids, config.INTERVAL_ID)
-        signals = await generate_live_signals(api, price_df)
-
-    print(f"Latest timestamp: {price_df.index.max()}")
-    print(f"Generated {len(signals)} live signals.\n")
-
-    for s in signals:
-        print(
-            f"{s['timestamp']} | {s['symbol']} | {s['side']} "
-            f"@ {s['price']:.4f} | p_buy={s['p_buy']:.3f} p_sell={s['p_sell']:.3f} "
-            f"| ema={s['ema']:.4f} vol={s['vol']:.4f}"
-        )
-
-
-if __name__ == "__main__":
+async def hourly_loop():
     while True:
         try:
-            asyncio.run(main())
+            print("Running LIVE prediction...\n")
+
+            async with ZypryxApi(config.API_URL, config.API_TOKEN) as api:
+                coin_ids = await load_coin_ids(api)
+                price_df = await load_price_data_from_api(api, coin_ids, config.INTERVAL_ID)
+                signals = await generate_live_signals(api, price_df)
+
+            print(f"Latest timestamp: {price_df.index.max()}")
+            print(f"Generated {len(signals)} live signals.\n")
+
+            for s in signals:
+                print(
+                    f"{s['timestamp']} | {s['symbol']} | {s['side']} "
+                    f"@ {s['price']:.4f} | p_buy={s['p_buy']:.3f} p_sell={s['p_sell']:.3f} "
+                    f"| ema={s['ema']:.4f} vol={s['vol']:.4f}"
+                )
+
         except Exception as e:
             print("Error in live loop:", e)
             traceback.print_exc()
 
-        time.sleep(3600)
+        print("Sleeping for 1 hour...\n")
+        await asyncio.sleep(3600)
+
+if __name__ == "__main__":
+    asyncio.run(hourly_loop())
