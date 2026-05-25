@@ -209,32 +209,29 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
 # ---------------------------------------------------------
 # MAIN LOOP
 # ---------------------------------------------------------
-async def hourly_loop():
-    while True:
-        try:
-            print("Running LIVE prediction...\n")
+async def run_once():
+    try:
+        print("Running LIVE prediction...\n")
 
-            async with ZypryxApi(config.API_URL, config.API_TOKEN) as api:
-                coin_ids = await load_coin_ids(api)
-                price_df = await load_price_data_from_api(api, coin_ids, config.INTERVAL_ID)
-                signals = await generate_live_signals(api, price_df)
+        async with ZypryxApi(config.API_URL, config.API_TOKEN) as api:
+            coin_ids = await load_coin_ids(api)
+            price_df = await load_price_data_from_api(api, coin_ids, config.INTERVAL_ID)
+            signals = await generate_live_signals(api, price_df)
 
-            print(f"Latest timestamp: {price_df.index.max()}")
-            print(f"Generated {len(signals)} live signals.\n")
+        print(f"Latest timestamp: {price_df.index.max()}")
+        print(f"Generated {len(signals)} live signals.\n")
 
-            for s in signals:
-                print(
-                    f"{s['timestamp']} | {s['symbol']} | {s['side']} "
-                    f"@ {s['price']:.4f} | p_buy={s['p_buy']:.3f} p_sell={s['p_sell']:.3f} "
-                    f"| ema={s['ema']:.4f} vol={s['vol']:.4f}"
-                )
+        for s in signals:
+            print(
+                f"{s['timestamp']} | {s['symbol']} | {s['side']} "
+                f"@ {s['price']:.4f} | p_buy={s['p_buy']:.3f} p_sell={s['p_sell']:.3f} "
+                f"| ema={s['ema']:.4f} vol={s['vol']:.4f}"
+            )
 
-        except Exception as e:
-            print("Error in live loop:", e)
-            traceback.print_exc()
+    except Exception as e:
+        print("Error in live run:", e)
+        traceback.print_exc()
 
-        print("Sleeping for 1 hour...\n")
-        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    asyncio.run(hourly_loop())
+    asyncio.run(run_once())
