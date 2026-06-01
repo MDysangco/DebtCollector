@@ -121,11 +121,13 @@ class ZypryxApi:
     # ---------------------------------------------------------
     # CONFIGURATION
     # ---------------------------------------------------------
-    async def insert_configuration(self, config_dict: dict):
+    async def insert_configurations(self, config_dict: dict):
         return await self._send("POST", "api/configuration", json=config_dict)
 
     # ---------------------------------------------------------
     # READING ENDPOINT
     # ---------------------------------------------------------
-    async def insert_reading(self, reading_dict: dict):
-        return await self._send("POST", "api/reading", json=reading_dict)
+    async def insert_readings_bulk(self, readings_list: list[dict]):
+        return await self._send("POST", "api/reading", json=readings_list)
+
+

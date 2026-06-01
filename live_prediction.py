@@ -3,6 +3,7 @@ import traceback
 import pandas as pd
 import numpy as np
 import asyncio
+import uuid
 
 from ZypryxApi import ZypryxApi
 from features_and_labels import merge_features_and_labels, detect_symbols
@@ -137,7 +138,13 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
     preds = model.predict(X_live)
     probs = model.predict_proba(X_live)
 
-    config_id = await api.insert_configuration({
+    # ---------------------------------------------------------
+    # CONFIG AS LIST + PYTHON-GENERATED GUID
+    # ---------------------------------------------------------
+    config_hash = uuid.uuid4().hex
+
+    config_list = [{
+        "UniqueId": config_hash,
         "BuyProbabilityThreshold": config.BUY_PROB_THRESHOLD,
         "SellProbabilityThreshold": config.SELL_PROB_THRESHOLD,
         "TrendEMALength": config.TREND_EMA_LENGTH,
@@ -147,11 +154,16 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
         "PerSymbolFloor": config.PER_SYMBOL_FLOOR,
         "Margin": config.MARGIN,
         "CooldownHours": config.COOLDOWN_HOURS
-    })
+    }]
 
+    # API now returns ONLY bool
+    await api.insert_configurations(config_list)
+
+    readings_batch = []
     signals = []
 
     for (ts, sym), pred, prob_vec in zip(X_live.index, preds, probs):
+
         close = price_df.loc[latest_ts, f"{sym}_Close"]
         if pd.isna(close):
             continue
@@ -174,7 +186,7 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
         else:
             final_signal = "HOLD"
 
-        await api.insert_reading({
+        readings_batch.append({
             "TimeStampUTC": latest_ts.isoformat(),
             "CoinId": int(sym[1:]),
             "PredictClass": int(pred),
@@ -189,7 +201,7 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
             "PassedVolFilter": bool(passed_vol),
             "FinalSignal": final_signal,
             "ModelId": 1,
-            "ConfigRowId": config_id
+            "ConfigHash": config_hash
         })
 
         if final_signal != "HOLD":
@@ -204,7 +216,11 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
                 "vol": float(vol_val),
             })
 
+    print(readings_batch)
+    await api.insert_readings_bulk(readings_batch)
+
     return signals
+
 
 # ---------------------------------------------------------
 # MAIN LOOP
