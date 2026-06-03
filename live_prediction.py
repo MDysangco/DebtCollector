@@ -201,7 +201,7 @@ async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
             "PassedVolFilter": bool(passed_vol),
             "FinalSignal": final_signal,
             "ModelId": 1,
-            "ConfigHash": config_hash
+            "ConfigUniqueId": config_hash
         })
 
         if final_signal != "HOLD":
