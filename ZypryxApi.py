@@ -93,12 +93,14 @@ class ZypryxApi:
     # ---------------------------------------------------------
     # KLINE ENDPOINTS
     # ---------------------------------------------------------
-    async def get_klines(self, coin_id: int, interval: str):
+    async def get_klines(self, coin_id: int, interval: str,
+                         start_ms: int = None, end_ms: int = None):
         route = f"api/kline?coinId={coin_id}&interval={interval}"
+        if start_ms is not None:
+            route += f"&startDate={start_ms}"
+        if end_ms is not None:
+            route += f"&endDate={end_ms}"
         return await self._send("GET", route)
-
-    async def insert_klines(self, klines: list):
-        return await self._send("POST", "api/kline/insert", json=klines)
 
     async def get_latest_kline(self, coin_id: int, interval: str):
         return await self._send(
@@ -112,12 +114,6 @@ class ZypryxApi:
             f"api/kline/earliest?coinId={coin_id}&interval={interval}"
         )
 
-    async def delete_klines(self, start_ms: int, end_ms: int):
-        return await self._send(
-            "DELETE",
-            f"api/kline?startDate={start_ms}&endDate={end_ms}"
-        )
-
     # ---------------------------------------------------------
     # CONFIGURATION
     # ---------------------------------------------------------
@@ -125,8 +121,11 @@ class ZypryxApi:
         return await self._send("POST", "api/configuration", json=config_dict)
 
     # ---------------------------------------------------------
-    # READING ENDPOINT
+    # READING ENDPOINTS
     # ---------------------------------------------------------
+    async def get_readings(self, coin_id: int):
+        return await self._send("GET", f"api/reading?coinId={coin_id}")
+
     async def insert_readings_bulk(self, readings_list: list[dict]):
         return await self._send("POST", "api/reading", json=readings_list)
 

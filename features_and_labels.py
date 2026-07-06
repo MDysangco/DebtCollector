@@ -3,7 +3,8 @@ import numpy as np
 
 from config import (
     RSI_LENGTH, ATR_LENGTH,
-    MOM_WINDOWS, VOL_WINDOWS,
+    RET_WINDOWS, MOM_WINDOWS, VOL_WINDOWS,
+    VOLUME_REL_WINDOW, TREND_EMA_LENGTH,
     LABEL_HORIZON, LABEL_UP_THRESH, LABEL_DOWN_THRESH
 )
 
@@ -16,10 +17,10 @@ def build_features_for_symbol(df, sym):
     close = df[f"{sym}_Close"]
     high = df[f"{sym}_High"]
     low = df[f"{sym}_Low"]
-    vol = df[f"{sym}_Volume"]
+    volume = df[f"{sym}_Volume"]
 
-    rets = {f"ret_{w}": close.pct_change(w) for w in [1, 2, 4, 8]}
-    moms = {f"mom_{w}": close / close.shift(w) - 1 for w in MOM_WINDOWS}
+    rets = {f"ret_{w}": close.pct_change(w) for w in RET_WINDOWS}
+    moms = {f"mom_{w}": close.pct_change(w) for w in MOM_WINDOWS}
     vols = {f"vol_{w}": close.pct_change().rolling(w).std() for w in VOL_WINDOWS}
 
     delta = close.diff()
@@ -36,12 +37,14 @@ def build_features_for_symbol(df, sym):
     ], axis=1).max(axis=1)
     atr = tr.rolling(ATR_LENGTH).mean()
 
+    ema = close.ewm(span=TREND_EMA_LENGTH, adjust=False).mean()
+
     f = {
         "symbol": sym,
-        "close": close,
         "rsi": rsi,
-        "atr": atr,
-        "volume": vol,
+        "atr_pct": atr / close,
+        "vol_rel": volume / volume.rolling(VOLUME_REL_WINDOW).mean(),
+        "dist_ema": close / ema - 1,
     }
     f.update(rets)
     f.update(moms)
