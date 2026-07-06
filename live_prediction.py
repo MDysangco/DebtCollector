@@ -8,6 +8,7 @@ import uuid
 from ZypryxApi import ZypryxApi
 from features_and_labels import merge_features_and_labels, detect_symbols
 from live_feature import build_live_features
+from market_data import load_coin_ids, load_price_data_from_api
 from model_train import train_model
 
 import config
@@ -17,15 +18,6 @@ from config import (
     TREND_EMA_LENGTH,
     VOL_FILTER_WINDOW, VOL_MIN_THRESHOLD,
 )
-
-# ---------------------------------------------------------
-# LOAD COINS DYNAMICALLY
-# ---------------------------------------------------------
-async def load_coin_ids(api):
-    coins = await api.get_active_coins()
-    if not coins:
-        raise ValueError("No active coins returned from API.")
-    return [c["Id"] for c in coins]
 
 # ---------------------------------------------------------
 # TREND + VOLATILITY
@@ -63,72 +55,20 @@ def train_full_model(price_df: pd.DataFrame):
     return model, features
 
 # ---------------------------------------------------------
-# LOAD PRICE DATA FROM API
-# ---------------------------------------------------------
-async def load_price_data_from_api(api: ZypryxApi, coin_ids, interval_id):
-    frames = []
-
-    for cid in coin_ids:
-        kl = await api.get_klines(cid, interval_id)
-        if not kl:
-            print(f"[WARN] Coin {cid} returned NO klines.")
-            continue
-
-        df = pd.DataFrame(kl)
-
-        df = df.rename(columns={
-            "KlineOpenTime": "Timestamp",
-            "OpenPrice": "Open",
-            "HighPrice": "High",
-            "LowPrice": "Low",
-            "ClosePrice": "Close",
-            "Volume": "Volume",
-        })
-
-        df["Timestamp"] = pd.to_datetime(df["Timestamp"].astype("int64"), unit="ms", utc=True)
-        df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume"]]
-
-        prefix = f"C{cid}"
-        df = df.rename(columns={
-            "Open": f"{prefix}_Open",
-            "High": f"{prefix}_High",
-            "Low": f"{prefix}_Low",
-            "Close": f"{prefix}_Close",
-            "Volume": f"{prefix}_Volume",
-        })
-
-        frames.append(df)
-
-    if not frames:
-        raise ValueError("No coins returned klines.")
-
-    merged = frames[0]
-    for df in frames[1:]:
-        merged = merged.merge(df, on="Timestamp", how="outer")
-
-    merged = merged.sort_values("Timestamp").set_index("Timestamp")
-    merged = merged[~merged.index.duplicated(keep="first")]
-
-    first_valids = []
-    for col in merged.columns:
-        fv = merged[col].first_valid_index()
-        if fv is not None:
-            first_valids.append(fv)
-
-    start_ts = max(first_valids)
-    merged = merged.loc[start_ts:]
-
-    print(f"[INFO] Aligned window starts at: {start_ts}")
-    print(f"[INFO] Using {len(merged.columns) // 5} valid coins")
-
-    return merged
-
-# ---------------------------------------------------------
 # GENERATE LIVE SIGNALS
 # ---------------------------------------------------------
+def select_latest_complete_bar(price_df: pd.DataFrame, min_coin_frac: float):
+    close_cols = [c for c in price_df.columns if c.endswith("_Close")]
+    valid_frac = price_df[close_cols].notna().mean(axis=1)
+    complete = valid_frac[valid_frac >= min_coin_frac]
+    if complete.empty:
+        return price_df.index.max()
+    return complete.index.max()
+
+
 async def generate_live_signals(api: ZypryxApi, price_df: pd.DataFrame):
     model, features = train_full_model(price_df)
-    latest_ts = price_df.index.max()
+    latest_ts = select_latest_complete_bar(price_df, config.LIVE_BAR_MIN_COIN_FRAC)
 
     X_live = features.loc[features.index.get_level_values("timestamp") == latest_ts]
     if X_live.empty:

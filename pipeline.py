@@ -1,11 +1,15 @@
+import asyncio
+
 import pandas as pd
 
 from model_train import train_model, time_split
 from features_and_labels import merge_features_and_labels
 from backtest_portfolio import backtest_portfolio
+from market_data import load_coin_ids, load_price_data_from_api
 
 from ZypryxApi import ZypryxApi
 
+import config
 from config import (
     WF_TRAIN_DAYS, WF_TEST_DAYS, WF_STEP_DAYS,
     LABEL_HORIZON, TRAIN_SPLIT_Q,
@@ -16,65 +20,10 @@ from config import (
 # ---------------------------------------------------------
 # LOAD PRICE DATA FROM API
 # ---------------------------------------------------------
-def load_price_data_from_api(client: ZypryxApi, coin_ids, interval_id, start=None, end=None):
-    frames = []
-
-    for cid in coin_ids:
-        kl = client.get_klines(cid, interval_id, start, end)
-        if not kl:
-            print(f"[WARN] Coin {cid} returned NO klines.")
-            continue
-
-        df = pd.DataFrame(kl)
-
-        df["Timestamp"] = pd.to_datetime(df["klineOpenTime"], unit="ms", utc=True)
-
-        df = df.rename(columns={
-            "openPrice": "Open",
-            "highPrice": "High",
-            "lowPrice": "Low",
-            "closePrice": "Close",
-            "volume": "Volume",
-        })
-
-        df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume"]]
-        df = df.drop_duplicates(subset=["Timestamp"])
-
-        prefix = f"C{cid}"
-        df = df.rename(columns={
-            "Open": f"{prefix}_Open",
-            "High": f"{prefix}_High",
-            "Low": f"{prefix}_Low",
-            "Close": f"{prefix}_Close",
-            "Volume": f"{prefix}_Volume",
-        })
-
-        frames.append(df)
-
-    if not frames:
-        raise ValueError("No coins returned klines.")
-
-    merged = frames[0]
-    for df in frames[1:]:
-        merged = merged.merge(df, on="Timestamp", how="outer")
-
-    merged = merged.sort_values("Timestamp").set_index("Timestamp")
-    merged = merged[~merged.index.duplicated(keep="first")]
-
-    # Align start window
-    first_valids = []
-    for col in merged.columns:
-        fv = merged[col].first_valid_index()
-        if fv is not None:
-            first_valids.append(fv)
-
-    start_ts = max(first_valids)
-    merged = merged.loc[start_ts:]
-
-    print(f"[INFO] Aligned window starts at: {start_ts}")
-    print(f"[INFO] Using {len(merged.columns) // 5} valid coins")
-
-    return merged
+async def _fetch_price_df():
+    async with ZypryxApi(config.API_URL, config.API_TOKEN) as api:
+        coin_ids = COIN_IDS or await load_coin_ids(api)
+        return await load_price_data_from_api(api, coin_ids, INTERVAL_ID)
 
 
 # ---------------------------------------------------------
@@ -173,9 +122,7 @@ def run_wf_tuning(price_df):
 # PIPELINE ENTRYPOINT
 # ---------------------------------------------------------
 def run_pipeline(use_tuning=False, horizon=LABEL_HORIZON):
-    client = ZypryxApiClient(config.API_URL, config.API_TOKEN)
-
-    price_df = load_price_data_from_api(client, COIN_IDS, INTERVAL_ID)
+    price_df = asyncio.run(_fetch_price_df())
 
     if use_tuning:
         stats, trades = run_wf_tuning(price_df)
