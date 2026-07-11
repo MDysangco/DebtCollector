@@ -146,7 +146,7 @@ async def post_readings(api: ZypryxApi, readings_batch: list):
               f"{len(readings_batch)} rows:")
         print(json.dumps(readings_batch, indent=2))
     else:
-        await post_readings(api, readings_batch)
+        await api.insert_readings_bulk(readings_batch)
 
 
 # ---------------------------------------------------------
