@@ -38,3 +38,9 @@ Desktop.ini
 # --- Project-generated files ---
 trades.csv
 *.log
+data_cache/
+compare_results.csv
+price_cache.parquet
+predictions.parquet
+predictions_*.parquet
+examples_results.csv
